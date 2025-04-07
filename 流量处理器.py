@@ -5,8 +5,8 @@ import matplotlib.pyplot as plt
 from typing import Dict, Optional
 
 def 处理流量数据(
-        处理器: Dict,
-        原始流量: np.ndarray
+        窗口大小: int,
+        入库流量: np.ndarray
 ) -> Dict[str, np.ndarray]:
     """主处理流程
 
@@ -25,10 +25,8 @@ def 处理流量数据(
             "残差": 残差分量
         }
     """
-    窗口大小 = 处理器["配置"]["窗口大小"]
-
     # 1. 平滑处理
-    平滑后 = 移动平均平滑(原始流量, 窗口大小)
+    平滑后 = 移动平均平滑(入库流量, 窗口大小)
 
     # 2. 趋势分解
     趋势 = 提取趋势分量(平滑后)
@@ -81,7 +79,7 @@ def 计算季节性分量(数据: np.ndarray, 周期: int) -> np.ndarray:
 
 
 def 绘制分解图(
-        原始流量: np.ndarray,
+        原始入库流量: np.ndarray,
         平滑后: np.ndarray,
         趋势: np.ndarray,
         季节性: np.ndarray,
@@ -94,7 +92,7 @@ def 绘制分解图(
 
     # 子图1：原始 vs 平滑
     plt.subplot(2, 2, 1)
-    plt.plot(原始流量, label="原始流量", alpha=0.6)
+    plt.plot(原始入库流量, label="原始流量", alpha=0.6)
     plt.plot(平滑后, label=f"平滑 (窗口={窗口大小})")
     plt.title("原始与平滑对比")
     plt.legend()
