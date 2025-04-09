@@ -1,10 +1,14 @@
+import random
+
 from sklearn.cluster import KMeans
 
 from typing import Dict, List, Tuple
 import numpy as np
 from scipy.optimize import differential_evolution
+from sklearn.preprocessing import StandardScaler
 
 from 日志管理 import 日志记录器
+
 
 
 def 准备RBF训练数据(入库流量: np.ndarray, 动态库容时序序列: np.ndarray, 需水量: np.ndarray,
@@ -77,12 +81,12 @@ def 准备RBF训练数据(入库流量: np.ndarray, 动态库容时序序列: np
                 本次样本最小放水量 = 当前库容 + 当前入流 - 最大库容
             临时目标列表.append(本次样本最小放水量)
         # 3. 转换为numpy数组
-        目标序列 = np.array(临时目标列表)
+        放水量时间序列 = np.array(临时目标列表)
     else:
         # TODO: 请问这个0.6代表什么？是经验公式吗
-        目标序列 = 0.6 * 入库流量[0:样本数]
+        放水量时间序列 = 0.6 * 入库流量[0:样本数]
 
-    return 特征字典,目标序列
+    return 特征字典,放水量时间序列
 
 def 准备预报的训练数据(入库流量: np.ndarray, 动态库容时序: np.ndarray) -> List[Dict]:
     """从数据容器中提取历史数据构建训练集"""
@@ -180,7 +184,7 @@ def 获取特征矩阵(
             - 入库流量: 形状 [n_samples, n_timesteps]
             - 需水量: 形状 [n_samples]
             - 流量趋势: 形状 [n_samples]
-        特征模式: "no_forecast"或"with_forecast"
+        特征模式: "无预报"或"有预报"
 
     返回:
         特征矩阵 [n_samples, n_features]
@@ -214,10 +218,42 @@ def 获取特征矩阵(
             输入特征["当前库容"],
             输入特征["入库流量"][:, 0],
             输入特征["需水量"],
+            # TODO：可能需要修正
             输入特征["流量趋势"],
             输入特征["入库流量"][:, 1],  # t+1预报
             输入特征["入库流量"][:, 2]  # t+2预报
         ])
+
+
+from sklearn.preprocessing import StandardScaler
+
+
+def 水库特征标准化(特征矩阵):
+    """
+    分组标准化处理水库调度特征矩阵
+    输入: [库容,当前流量,需水量,趋势,t+1预报,t+2预报]
+    输出: 分组标准化后的矩阵
+    """
+    # 第一组：库容（单独处理，使用Robust Scaling）
+    库容_scaled = (特征矩阵[:, 0] - np.median(特征矩阵[:, 0])) / \
+                  (np.percentile(特征矩阵[:, 0], 75) - np.percentile(特征矩阵[:, 0], 25))
+
+    # 第二组：流量相关特征（当前流量 + 预报）
+    流量组 = 特征矩阵[:, [1, 4, 5]]  # 当前流量, t+1, t+2
+    流量组_scaled = StandardScaler().fit_transform(流量组)
+
+    # 第三组：需水量+趋势（需水量保持与流量的关系）
+    需水量_scaled = (特征矩阵[:, 2] - np.mean(特征矩阵[:, 2])) / np.std(特征矩阵[:, 2])
+    趋势_scaled = (特征矩阵[:, 3] - np.mean(特征矩阵[:, 3])) / np.std(特征矩阵[:, 3])
+
+    return np.column_stack([
+        库容_scaled,
+        流量组_scaled[:, 0],  # 当前流量
+        需水量_scaled,
+        趋势_scaled,
+        流量组_scaled[:, 1],  # t+1
+        流量组_scaled[:, 2]  # t+2
+    ])
 
 
 def 训练RBF网络(
@@ -242,6 +278,23 @@ def 训练RBF网络(
     # 1. 特征选择与预处理
     特征矩阵 = 获取特征矩阵(输入特征, 特征模式)
     样本数, 特征数 = 特征矩阵.shape
+    # // AI添加 - 特征矩阵基础信息检查
+    print("// AI添加 - 特征矩阵检查")
+    print(f"特征矩阵形状: ({样本数}, {特征数})")
+    print("各列特征范围:")
+    print(f"当前库容: [{np.min(特征矩阵[:,0]):.1f}, {np.max(特征矩阵[:,0]):.1f}]")
+    print(f"当前流量: [{np.min(特征矩阵[:,1]):.1f}, {np.max(特征矩阵[:,1]):.1f}]")
+    print(f"需水量: [{np.min(特征矩阵[:,2]):.1f}, {np.max(特征矩阵[:,2]):.1f}]")
+    print(f"流量趋势: [{np.min(特征矩阵[:,3]):.2f}, {np.max(特征矩阵[:,3]):.2f}]")
+    print(f"t+1预报: [{np.min(特征矩阵[:,4]):.1f}, {np.max(特征矩阵[:,4]):.1f}]")
+    print(f"t+2预报: [{np.min(特征矩阵[:,5]):.1f}, {np.max(特征矩阵[:,5]):.1f}]")
+
+    特征矩阵_标准化 = 水库特征标准化(特征矩阵)
+
+    print("标准化后特征范围:")
+    print(f"库容: [{np.min(特征矩阵_标准化[:, 0]):.2f}, {np.max(特征矩阵_标准化[:, 0]):.2f}]")
+    print(f"当前流量: [{np.min(特征矩阵_标准化[:, 1]):.2f}, {np.max(特征矩阵_标准化[:, 1]):.2f}]")
+    print(f"需水量-流量比: {np.mean(特征矩阵_标准化[:, 2] / (特征矩阵_标准化[:, 1] + 1e-6)):.2f}")
 
     # 2. K-Means聚类确定中心点
     kmeans = KMeans(
@@ -297,14 +350,48 @@ def 预测输出(
         宽度参数,
         输出权重,
         输入特征: Dict[str, np.ndarray],
-        特征模式: str
+        模式: str
 ) -> np.ndarray:
     # TODO: 进一步研究确认
     """使用RBF网络进行预测"""
-    特征矩阵 = 获取特征矩阵(输入特征, 特征模式)
+    特征矩阵 = 获取特征矩阵(输入特征, 模式)
     phi = 计算径向基矩阵(中心点, 宽度参数, 特征矩阵)
     预测值 = phi @ 输出权重
     if 预测值.shape[1] == 1:
         return 预测值.squeeze(axis=1)
     else:
         return 预测值
+
+def 根据RBF预测函数生成多组数据(中心点,宽度参数,输出权重,
+                                输入特征,模式,
+                                生成数量:int=50,
+                                噪声标准差:float = 0.01) ->np.ndarray:
+    # 初始化结果容器 结果应该和输入特征是一样的，只不过有 {生成数量} 个
+    所有预测结果 = []
+
+    # 获取样本数量（以第一个特征的长度为准）
+    样本数 = len(next(iter(输入特征.values())))
+
+    for _ in range(生成数量):
+        # 添加噪声，从而让数据发生一定的变化
+        扰动后特征 = {
+            k: v + np.random.normal(0, 噪声标准差, v.shape)
+            for k, v in 输入特征.items()
+        }
+
+        # 2. 使用RBF模型预测
+        原始预测 = 预测输出(中心点,宽度参数,输出权重,扰动后特征,模式)
+
+        # 3. 三点滑动平均平滑
+        平滑预测 = []
+        for i in range(样本数):
+            # 边界处理
+            左 = max(0, i - 1)
+            右 = min(样本数 - 1, i + 1)
+            邻域 = 原始预测[左: 右 + 1]
+            平滑值 = sum(邻域) / len(邻域)
+            平滑预测.append(平滑值)
+
+        所有预测结果.append(平滑预测)
+
+    return 所有预测结果
